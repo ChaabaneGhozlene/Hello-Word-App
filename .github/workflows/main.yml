@@ -44,17 +44,3 @@ jobs:
           docker push ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
           docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: 'my-azure-webapp'
-          images: '${{ secrets.DOCKER_USERNAME }}/myapp:latest'

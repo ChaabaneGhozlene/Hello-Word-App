@@ -1,32 +1,62 @@
 name: CI/CD Pipeline
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+
+env:
+  DOCKER_IMAGE_NAME: myapp
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AZURE_WEBAPP_NAME: 'my-azure-webapp'
 
 jobs:
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Build Docker image for testing
-        run: docker build -t myapp:test .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-      - name: Test running container
+      - name: Build Docker image
+        run: docker build -t $DOCKER_IMAGE_NAME:test .
+
+      - name: Run container tests
         run: |
-          docker run -d --name myapp_test -p 8000:8000 myapp:test
-          sleep 5
-          curl http://localhost:8000 | grep "Hello World"
-          docker stop myapp_test
-          docker rm myapp_test
+          docker run -d --name ${DOCKER_IMAGE_NAME}_test -p 8000:8000 ${DOCKER_IMAGE_NAME}:test
+          sleep 10  # Increased sleep for better startup time
+          
+          # Test if container is responding
+          if curl -f http://localhost:8000 | grep -q "Hello World"; then
+            echo "✅ Test passed - Application is working correctly"
+          else
+            echo "❌ Test failed - Application not responding as expected"
+            exit 1
+          fi
+          
+          # Cleanup
+          docker stop ${DOCKER_IMAGE_NAME}_test
+          docker rm ${DOCKER_IMAGE_NAME}_test
 
-  build:
+  build-and-push:
+    name: Build and Push Docker Image
     needs: test
     runs-on: ubuntu-latest
+    if: success()
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image-tag: ${{ steps.version.outputs.image-tag }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v2
@@ -34,21 +64,68 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Get and increment version
+      - name: Generate version number
         id: version
         run: |
-          # Simple counter using GitHub API to get workflow run count
-          RUN_NUMBER=$(( ${{ github.run_number }} + 1 ))
-          echo "version=1.$RUN_NUMBER" >> $GITHUB_OUTPUT
+          # Generate semantic version based on date and run number
+          VERSION="1.${{ github.run_number }}.0"
+          IMAGE_TAG="${VERSION}-${{ github.sha:0:7 }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION"
+          echo "Image tag: $IMAGE_TAG"
 
-      - name: Build and tag Docker image
+      - name: Build Docker image
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} .
-          docker tag ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/myapp:latest
-          docker tag ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/myapp:v${{ steps.version.outputs.version }}
+          docker build \
+            -t $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:${{ steps.version.outputs.image-tag }} \
+            -t $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:latest \
+            .
 
-      - name: Push Docker image
+      - name: Push Docker images
         run: |
-          # docker push ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
-          # docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
-          docker push ${{ secrets.DOCKER_USERNAME }}/myapp:v${{ steps.version.outputs.version }}
+          docker push $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:${{ steps.version.outputs.image-tag }}
+          docker push $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:latest
+
+      - name: Output image information
+        run: |
+          echo "✅ Image successfully built and pushed:"
+          echo "Image: $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:${{ steps.version.outputs.image-tag }}"
+          echo "Latest: $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:latest"
+
+  deploy:
+    name: Deploy to Azure
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: $AZURE_WEBAPP_NAME
+          images: $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:latest
+          # Optional: Add slot-name if using deployment slots
+          # slot-name: 'production'
+
+      - name: Verify deployment
+        run: |
+          echo "✅ Deployment completed successfully"
+          echo "Application deployed to: https://$AZURE_WEBAPP_NAME.azurewebsites.net"
+          echo "Image used: $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:latest"
+          echo "Version: ${{ needs.build-and-push.outputs.version }}"
+
+# Optional: Add a cleanup job if needed
+# cleanup:
+#   name: Cleanup
+#   needs: deploy
+#   runs-on: ubuntu-latest
+#   if: always()
+#   steps:
+#     - name: Cleanup Docker images
+#       run: docker system prune -f

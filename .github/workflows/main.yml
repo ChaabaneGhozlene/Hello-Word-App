@@ -55,5 +55,5 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'my-azure-webapp'
+          app-name: 'my-azure-webapp1'
           images: 'my-dockerhub-username/my-app:latest'

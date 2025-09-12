@@ -14,11 +14,7 @@ services:
     container_name: grafana
     ports:
       - "3000:3000"
-
-    image: nginx
-    container_name: demo-app
-    ports:
-      - "8080:80"
+ 
   app:
     image: nginx
     container_name: demo-app
